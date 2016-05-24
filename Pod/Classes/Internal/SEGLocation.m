@@ -82,7 +82,9 @@ LOCATION_NUMBER_PROPERTY(speed, location.speed);
         NSTimeInterval howRecent = [eventDate timeIntervalSinceNow];
         if (fabs(howRecent) > LOCATION_AGE) {
             dispatch_async(dispatch_get_main_queue(), ^{
+#if !(TARGET_OS_TV)
                 [self.locationManager startUpdatingLocation];
+#endif
             });
         }
     }
