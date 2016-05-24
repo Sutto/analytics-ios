@@ -1,6 +1,11 @@
 #import <Foundation/Foundation.h>
 #import "SEGIntegrationFactory.h"
 
+/**
+ * NSNotification name, that is posted after integrations are loaded.
+ */
+extern NSString *SEGAnalyticsIntegrationDidStart;
+
 @protocol SEGIntegrationFactory;
 
 /**
@@ -39,6 +44,17 @@
 
 
 /**
+ * Whether the analytics client should automatically make a track call for application lifecycle events, such as "Application Installed", "Application Updated" and "Application Opened".
+ */
+@property (nonatomic, assign) BOOL trackApplicationLifecycleEvents;
+
+/**
+ * Whether the analytics client should automatically make a screen call when a view controller is added to a view hierarchy. Because the underlying implementation uses method swizzling, we recommend initializing the analytics client as early as possible (before any screens are displayed), ideally during the Application delegate's applicationDidFinishLaunching method.
+ */
+@property (nonatomic, assign) BOOL recordScreenViews;
+
+
+/**
  * Register a factory that can be used to create an integration.
  */
 - (void)use:(id<SEGIntegrationFactory>)factory;
@@ -54,6 +70,13 @@
  * Used by the analytics client to configure various options.
  */
 @property (nonatomic, strong, readonly) SEGAnalyticsConfiguration *configuration;
+
+/**
+ * Setup this analytics client instance.
+ *
+ * @param configuration The configuration used to setup the client.
+ */
+- (instancetype)initWithConfiguration:(SEGAnalyticsConfiguration *)configuration;
 
 /**
  * Setup the analytics client.
@@ -248,7 +271,7 @@
 @interface SEGAnalytics (Deprecated)
 
 + (void)initializeWithWriteKey:(NSString *)writeKey __attribute__((deprecated("Use +setupWithConfiguration: instead")));
-- (id)initWithWriteKey:(NSString *)writeKey __attribute__((deprecated("Use -initWithConfiguration: instead")));
+- (instancetype)initWithWriteKey:(NSString *)writeKey __attribute__((deprecated("Use -initWithConfiguration: instead")));
 - (void)registerPushDeviceToken:(NSData *)deviceToken __attribute__((deprecated("Use -registerForRemoteNotificationsWithDeviceToken: instead")));
 - (void)registerForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken __attribute__((deprecated("Use -registeredForRemoteNotificationsWithDeviceToken: instead")));
 - (void)registerForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken options:(NSDictionary *)options __attribute__((deprecated("Use -registeredForRemoteNotificationsWithDeviceToken: instead")));

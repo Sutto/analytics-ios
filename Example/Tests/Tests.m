@@ -15,16 +15,16 @@ SpecBegin(Analytics);
 
 describe(@"analytics", ^{
     __block SEGAnalytics *analytics = nil;
-    
+
     beforeEach(^{
-        SEGAnalyticsConfiguration *configuration = [SEGAnalyticsConfiguration configurationWithWriteKey:@"MlTmISmburwl2nN9o3NFpGfElujcfb0q"];
+        SEGAnalyticsConfiguration *configuration = [SEGAnalyticsConfiguration configurationWithWriteKey:@"dpu3lo79nb"];
         [SEGAnalytics setupWithConfiguration:configuration];
         analytics = [SEGAnalytics sharedAnalytics];
     });
 
     it(@"initialized correctly", ^{
         expect(analytics.configuration.flushAt).to.equal(20);
-        expect(analytics.configuration.writeKey).to.equal(@"MlTmISmburwl2nN9o3NFpGfElujcfb0q");
+        expect(analytics.configuration.writeKey).to.equal(@"dpu3lo79nb");
         expect(analytics.configuration.shouldUseLocationServices).to.equal(@NO);
         expect(analytics.configuration.enableAdvertisingTracking).to.equal(@YES);
     });

@@ -5,11 +5,11 @@
 #import "SEGAnalyticsUtils.h"
 #import "SEGAnalyticsRequest.h"
 #import "SEGAnalytics.h"
-
 #import "SEGIntegrationFactory.h"
 #import "SEGIntegration.h"
-#import <objc/runtime.h>
 #import "SEGSegmentIntegrationFactory.h"
+#import "UIViewController+SEGScreen.h"
+#import <objc/runtime.h>
 
 static SEGAnalytics *__sharedInstance = nil;
 NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.did.start";
@@ -30,7 +30,7 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
     return [[SEGAnalyticsConfiguration alloc] initWithWriteKey:writeKey];
 }
 
-- (id)initWithWriteKey:(NSString *)writeKey
+- (instancetype)initWithWriteKey:(NSString *)writeKey
 {
     if (self = [self init]) {
         self.writeKey = writeKey;
@@ -74,6 +74,7 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 @property (nonatomic, strong) NSArray *factories;
 @property (nonatomic, strong) NSMutableDictionary *integrations;
 @property (nonatomic, strong) NSMutableDictionary *registeredIntegrations;
+@property (nonatomic) volatile BOOL initialized;
 
 @end
 
@@ -90,7 +91,7 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
     });
 }
 
-- (id)initWithConfiguration:(SEGAnalyticsConfiguration *)configuration
+- (instancetype)initWithConfiguration:(SEGAnalyticsConfiguration *)configuration
 {
     NSCParameterAssert(configuration != nil);
 
@@ -101,7 +102,12 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
         self.messageQueue = [[NSMutableArray alloc] init];
         self.factories = [configuration.factories copy];
         self.integrations = [NSMutableDictionary dictionaryWithCapacity:self.factories.count];
+        self.registeredIntegrations = [NSMutableDictionary dictionaryWithCapacity:self.factories.count];
         self.configuration = configuration;
+
+        if (configuration.recordScreenViews) {
+            [UIViewController seg_swizzleViewDidAppear];
+        }
 
         // Update settings on each integration immediately
         [self refreshSettings];
@@ -121,12 +127,58 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
                                   UIApplicationDidBecomeActiveNotification ]) {
             [nc addObserver:self selector:@selector(handleAppStateNotification:) name:name object:nil];
         }
+
+        [self trackApplicationLifecycleEvents:configuration.trackApplicationLifecycleEvents];
     }
     return self;
 }
 
 
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+
 #pragma mark - NSNotificationCenter Callback
+NSString *const SEGVersionKey = @"SEGVersionKey";
+NSString *const SEGBuildKey = @"SEGBuildKey";
+
+- (void)trackApplicationLifecycleEvents:(BOOL)trackApplicationLifecycleEvents
+{
+    if (!trackApplicationLifecycleEvents) {
+        return;
+    }
+
+    NSString *previousVersion = [[NSUserDefaults standardUserDefaults] stringForKey:SEGVersionKey];
+    NSInteger previousBuild = [[NSUserDefaults standardUserDefaults] integerForKey:SEGBuildKey];
+
+    NSString *currentVersion = [[NSBundle mainBundle] infoDictionary][@"CFBundleVersion"];
+    NSInteger currentBuild = [[[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] integerValue];
+
+    if (!previousBuild) {
+        [self track:@"Application Installed" properties:@{
+            @"version" : currentVersion,
+            @"build" : @(currentBuild)
+        }];
+    } else if (currentBuild != previousBuild) {
+        [self track:@"Application Updated" properties:@{
+            @"previous_version" : previousVersion,
+            @"previous_build" : @(previousBuild),
+            @"version" : currentVersion,
+            @"build" : @(currentBuild)
+        }];
+    }
+
+
+    [self track:@"Application Started" properties:@{
+        @"version" : currentVersion,
+        @"build" : @(currentBuild)
+    }];
+
+    [[NSUserDefaults standardUserDefaults] setObject:currentVersion forKey:SEGVersionKey];
+    [[NSUserDefaults standardUserDefaults] setInteger:currentBuild forKey:SEGBuildKey];
+}
 
 
 - (void)onAppForeground:(NSNotification *)note
@@ -141,23 +193,24 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
     static dispatch_once_t selectorMappingOnce;
     dispatch_once(&selectorMappingOnce, ^{
         selectorMapping = @{
-                            UIApplicationDidFinishLaunchingNotification :
-                                NSStringFromSelector(@selector(applicationDidFinishLaunching:)),
-                            UIApplicationDidEnterBackgroundNotification :
-                                NSStringFromSelector(@selector(applicationDidEnterBackground)),
-                            UIApplicationWillEnterForegroundNotification :
-                                NSStringFromSelector(@selector(applicationWillEnterForeground)),
-                            UIApplicationWillTerminateNotification :
-                                NSStringFromSelector(@selector(applicationWillTerminate)),
-                            UIApplicationWillResignActiveNotification :
-                                NSStringFromSelector(@selector(applicationWillResignActive)),
-                            UIApplicationDidBecomeActiveNotification :
-                                NSStringFromSelector(@selector(applicationDidBecomeActive))
-                            };
+            UIApplicationDidFinishLaunchingNotification :
+                NSStringFromSelector(@selector(applicationDidFinishLaunching:)),
+            UIApplicationDidEnterBackgroundNotification :
+                NSStringFromSelector(@selector(applicationDidEnterBackground)),
+            UIApplicationWillEnterForegroundNotification :
+                NSStringFromSelector(@selector(applicationWillEnterForeground)),
+            UIApplicationWillTerminateNotification :
+                NSStringFromSelector(@selector(applicationWillTerminate)),
+            UIApplicationWillResignActiveNotification :
+                NSStringFromSelector(@selector(applicationWillResignActive)),
+            UIApplicationDidBecomeActiveNotification :
+                NSStringFromSelector(@selector(applicationDidBecomeActive))
+        };
     });
     SEL selector = NSSelectorFromString(selectorMapping[note.name]);
-    if (selector)
-        [self callIntegrationsWithSelector:selector arguments:nil options:nil];
+    if (selector) {
+        [self callIntegrationsWithSelector:selector arguments:nil options:nil sync:true];
+    }
 }
 
 #pragma mark - Public API
@@ -193,7 +246,8 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 
     [self callIntegrationsWithSelector:NSSelectorFromString(@"identify:")
                              arguments:@[ payload ]
-                               options:options];
+                               options:options
+                                  sync:false];
 }
 
 #pragma mark - Track
@@ -219,7 +273,8 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 
     [self callIntegrationsWithSelector:NSSelectorFromString(@"track:")
                              arguments:@[ payload ]
-                               options:options];
+                               options:options
+                                  sync:false];
 }
 
 #pragma mark - Screen
@@ -243,10 +298,10 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
                                                                context:SEGCoerceDictionary([options objectForKey:@"context"])
                                                           integrations:[options objectForKey:@"integrations"]];
 
-
     [self callIntegrationsWithSelector:NSSelectorFromString(@"screen:")
                              arguments:@[ payload ]
-                               options:options];
+                               options:options
+                                  sync:false];
 }
 
 #pragma mark - Group
@@ -270,7 +325,8 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 
     [self callIntegrationsWithSelector:NSSelectorFromString(@"group:")
                              arguments:@[ payload ]
-                               options:options];
+                               options:options
+                                  sync:false];
 }
 
 #pragma mark - Alias
@@ -288,39 +344,40 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 
     [self callIntegrationsWithSelector:NSSelectorFromString(@"alias:")
                              arguments:@[ payload ]
-                               options:options];
+                               options:options
+                                  sync:false];
 }
 
 - (void)receivedRemoteNotification:(NSDictionary *)userInfo
 {
-    [self callIntegrationsWithSelector:_cmd arguments:@[ userInfo ] options:nil];
+    [self callIntegrationsWithSelector:_cmd arguments:@[ userInfo ] options:nil sync:true];
 }
 
 - (void)failedToRegisterForRemoteNotificationsWithError:(NSError *)error
 {
-    [self callIntegrationsWithSelector:_cmd arguments:@[ error ] options:nil];
+    [self callIntegrationsWithSelector:_cmd arguments:@[ error ] options:nil sync:true];
 }
 
 - (void)registeredForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
 {
     NSParameterAssert(deviceToken != nil);
 
-    [self callIntegrationsWithSelector:_cmd arguments:@[ deviceToken ] options:nil];
+    [self callIntegrationsWithSelector:_cmd arguments:@[ deviceToken ] options:nil sync:true];
 }
 
 - (void)handleActionWithIdentifier:(NSString *)identifier forRemoteNotification:(NSDictionary *)userInfo
 {
-    [self callIntegrationsWithSelector:_cmd arguments:@[ identifier, userInfo ] options:nil];
+    [self callIntegrationsWithSelector:_cmd arguments:@[ identifier, userInfo ] options:nil sync:true];
 }
 
 - (void)reset
 {
-    [self callIntegrationsWithSelector:_cmd arguments:nil options:nil];
+    [self callIntegrationsWithSelector:_cmd arguments:nil options:nil sync:false];
 }
 
 - (void)flush
 {
-    [self callIntegrationsWithSelector:_cmd arguments:nil options:nil];
+    [self callIntegrationsWithSelector:_cmd arguments:nil options:nil sync:false];
 }
 
 - (void)enable
@@ -377,6 +434,7 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 
     seg_dispatch_specific_async(_serialQueue, ^{
         [self flushMessageQueue];
+        self.initialized = true;
     });
 }
 
@@ -420,7 +478,7 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
 
 + (NSString *)version
 {
-    return @"3.0.1";
+    return @"3.1.0";
 }
 
 #pragma mark - Private
@@ -458,12 +516,14 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
     if (!_enabled)
         return;
 
-    if (self.integrations.count == 0)
-        SEGLog(@"Trying to send event, but no integrations found.");
-
-    [self.integrations enumerateKeysAndObjectsUsingBlock:^(NSString *key, id<SEGIntegration> integration, BOOL *stop) {
-        [self invokeIntegration:integration key:key selector:selector arguments:arguments options:options];
-    }];
+    // If the event has opted in for syncrhonous delivery, this may be called on any thread.
+    // Only allow one to be delivered at a time.
+    @synchronized(self)
+    {
+        [self.integrations enumerateKeysAndObjectsUsingBlock:^(NSString *key, id<SEGIntegration> integration, BOOL *stop) {
+            [self invokeIntegration:integration key:key selector:selector arguments:arguments options:options];
+        }];
+    }
 }
 
 - (void)invokeIntegration:(id<SEGIntegration>)integration key:(NSString *)key selector:(SEL)selector arguments:(NSArray *)arguments options:(NSDictionary *)options
@@ -523,16 +583,19 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
     }
 }
 
-- (void)callIntegrationsWithSelector:(SEL)selector arguments:(NSArray *)arguments options:(NSDictionary *)options
+- (void)callIntegrationsWithSelector:(SEL)selector arguments:(NSArray *)arguments options:(NSDictionary *)options sync:(BOOL)sync
 {
+    if (sync && self.initialized) {
+        [self forwardSelector:selector arguments:arguments options:options];
+        return;
+    }
+
     seg_dispatch_specific_async(_serialQueue, ^{
-        if (self.cachedSettings.count == 0 || self.settingsRequest != nil) {
-            // No cached settings, queue the API call
-            [self queueSelector:selector arguments:arguments options:options];
-        } else {
-            // Settings cached, flush message queue & new API call
+        if (self.initialized) {
             [self flushMessageQueue];
             [self forwardSelector:selector arguments:arguments options:options];
+        } else {
+            [self queueSelector:selector arguments:arguments options:options];
         }
     });
 }
@@ -560,7 +623,7 @@ NSString *SEGAnalyticsIntegrationDidStart = @"io.segment.analytics.integration.d
     [self setupWithConfiguration:[SEGAnalyticsConfiguration configurationWithWriteKey:writeKey]];
 }
 
-- (id)initWithWriteKey:(NSString *)writeKey
+- (instancetype)initWithWriteKey:(NSString *)writeKey
 {
     return [self initWithConfiguration:[SEGAnalyticsConfiguration configurationWithWriteKey:writeKey]];
 }

@@ -74,8 +74,7 @@ static BOOL GetAdTrackingEnabled()
 @property (nonatomic, strong) NSTimer *flushTimer;
 @property (nonatomic, strong) dispatch_queue_t serialQueue;
 @property (nonatomic, strong) NSMutableDictionary *traits;
-@property (nonatomic, assign) BOOL enableAdvertisingTracking;
-@property (nonatomic, assign) NSDictionary *bundledIntegrations;
+@property (nonatomic, assign) SEGAnalytics *analytics;
 @property (nonatomic, assign) SEGAnalyticsConfiguration *configuration;
 
 @end
@@ -91,13 +90,13 @@ static BOOL GetAdTrackingEnabled()
         self.anonymousId = [self getAnonymousId:NO];
         self.userId = [self getUserId];
         self.bluetooth = [[SEGBluetooth alloc] init];
-        self.reachability = [SEGReachability reachabilityWithHostname:@"http://google.com"];
+        self.reachability = [SEGReachability reachabilityWithHostname:@"google.com"];
         [self.reachability startNotifier];
         self.context = [self staticContext];
         self.flushTimer = [NSTimer scheduledTimerWithTimeInterval:30.0 target:self selector:@selector(flush) userInfo:nil repeats:YES];
         self.serialQueue = seg_dispatch_queue_create_specific("io.segment.analytics.segmentio", DISPATCH_QUEUE_SERIAL);
         self.flushTaskID = UIBackgroundTaskInvalid;
-        self.bundledIntegrations = [analytics bundledIntegrations];
+        self.analytics = analytics;
     }
     return self;
 }
@@ -106,8 +105,10 @@ static BOOL GetAdTrackingEnabled()
 {
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
 
-    dict[@"library"] = @{ @"name" : @"analytics-ios",
-                          @"version" : SEGStringize(ANALYTICS_VERSION) };
+    dict[@"library"] = @{
+        @"name" : @"analytics-ios",
+        @"version" : [SEGAnalytics version]
+    };
 
     NSMutableDictionary *infoDictionary = [[[NSBundle mainBundle] infoDictionary] mutableCopy];
     [infoDictionary addEntriesFromDictionary:[[NSBundle mainBundle] localizedInfoDictionary]];
@@ -130,7 +131,7 @@ static BOOL GetAdTrackingEnabled()
         if (NSClassFromString(SEGAdvertisingClassIdentifier)) {
             dict[@"adTrackingEnabled"] = @(GetAdTrackingEnabled());
         }
-        if (self.enableAdvertisingTracking) {
+        if (self.configuration.enableAdvertisingTracking) {
             NSString *idfa = SEGIDFA();
             if (idfa.length) dict[@"advertisingId"] = idfa;
         }
@@ -204,6 +205,8 @@ static BOOL GetAdTrackingEnabled()
         network;
     });
 
+    self.location = !self.location ? [self.configuration shouldUseLocationServices] ? [SEGLocation new] : nil : self.location;
+    [self.location startUpdatingLocation];
     if (self.location.hasKnownLocation)
         context[@"location"] = self.location.locationDictionary;
 
@@ -335,7 +338,7 @@ static BOOL GetAdTrackingEnabled()
     [self enqueueAction:@"alias" dictionary:dictionary context:payload.context integrations:payload.integrations];
 }
 
-- (void)registerForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken options:(NSDictionary *)options
+- (void)registeredForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
 {
     NSCParameterAssert(deviceToken != nil);
 
@@ -355,7 +358,7 @@ static BOOL GetAdTrackingEnabled()
 - (NSDictionary *)integrationsDictionary:(NSDictionary *)integrations
 {
     NSMutableDictionary *dict = [integrations ?: @{} mutableCopy];
-    for (NSString *integration in self.bundledIntegrations) {
+    for (NSString *integration in self.analytics.bundledIntegrations) {
         dict[integration] = @NO;
     }
     return [dict copy];
@@ -533,7 +536,6 @@ static BOOL GetAdTrackingEnabled()
 {
     [self dispatchBackgroundAndWait:^{
         if (self.queue.count)
-            
             [self persistQueue];
     }];
 }
@@ -543,7 +545,7 @@ static BOOL GetAdTrackingEnabled()
 - (NSMutableArray *)queue
 {
     if (!_queue) {
-        _queue = ([[NSUserDefaults standardUserDefaults] objectForKey:SEGQueueKey] ?: [NSMutableArray arrayWithContentsOfURL:self.queueURL]) ?: [[NSMutableArray alloc] init];
+        _queue = ([[[NSUserDefaults standardUserDefaults] objectForKey:SEGQueueKey] mutableCopy] ?: [NSMutableArray arrayWithContentsOfURL:self.queueURL]) ?: [[NSMutableArray alloc] init];
     }
     return _queue;
 }
@@ -551,7 +553,7 @@ static BOOL GetAdTrackingEnabled()
 - (NSMutableDictionary *)traits
 {
     if (!_traits) {
-        _traits = ([[NSUserDefaults standardUserDefaults] objectForKey:SEGTraitsKey] ?: [NSMutableDictionary dictionaryWithContentsOfURL:self.traitsURL]) ?: [[NSMutableDictionary alloc] init];
+        _traits = ([[[NSUserDefaults standardUserDefaults] objectForKey:SEGTraitsKey] mutableCopy] ?: [NSMutableDictionary dictionaryWithContentsOfURL:self.traitsURL]) ?: [[NSMutableDictionary alloc] init];
     }
     return _traits;
 }
@@ -604,7 +606,8 @@ static BOOL GetAdTrackingEnabled()
     return anonymousId;
 }
 
-- (NSString *)getUserId {
+- (NSString *)getUserId
+{
     return [[NSUserDefaults standardUserDefaults] valueForKey:SEGUserIdKey] ?: [[NSString alloc] initWithContentsOfURL:self.userIDURL encoding:NSUTF8StringEncoding error:NULL];
 }
 
